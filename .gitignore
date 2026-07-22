@@ -1,0 +1,35 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Project-generated (regenerable via scripts/prepare.py, scripts/train.py) ---
+artifacts/
+runs/
+
+# --- Checkpoints / large binaries, in case they land outside runs/ ---
+*.pt
+*.pth
+*.ckpt
+
+# --- Env / secrets ---
+.env
+.env.*
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
