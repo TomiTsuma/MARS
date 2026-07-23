@@ -86,8 +86,8 @@ def internal_diversity(
 
 
 def snn(
-        generated: Sequence[str], 
-        reference: Sequence[str],
+        generated: List[str], 
+        reference: List[str],
         sample: int = 5000, 
         seed: int = 0
     ) -> float:

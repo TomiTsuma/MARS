@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict, field
 from typing import Optional
+from datetime import datetime
 
 
 @dataclass
@@ -73,8 +74,10 @@ class TrainConfig:
     log_every: int = 100
     eval_every: int = 5_000
     ckpt_every: int = 10_000
+    gate_every: int = 10_000            # steps between Tier 0 gate checks
+    gate_n_samples: int = 1_000         # molecules sampled per gate check
     precision: str = "bf16"
-    out_dir: str = "runs/phase1"
+    out_dir: str = f"runs/phase1/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     seed: int = 0
 
 

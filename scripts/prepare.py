@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-
 import argparse
-import sys
-
-import numpy as np
-
-sys.path.insert(0, ".")
-import pandas as pd
-
-
 import json
 import os
+import sys
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
 import selfies as sf
 from rdkit import Chem, RDLogger
 from rdkit.Chem.Scaffolds import MurckoScaffold
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datasets.tokenizer import SelfiesTokenizer
+
 RDLogger.DisableLog("rdApp.*")
 
 ALLOWED_ELEMENTS = {"C", "N", "O", "S", "F", "Cl", "Br", "I", "P", "B"}
@@ -230,3 +227,36 @@ def gate1_verify(tokenizer, encoded: np.ndarray, smiles: List[str],
     if rate < 1.0:
         print("  FAIL — do not proceed to training.")
     return rate
+
+
+# ---------------------------------------------------------------- CLI
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", type=str,
+                        default="data/250k_rndm_zinc_drugs_clean_3.csv")
+    parser.add_argument("--smiles-col", type=str, default="smiles")
+    parser.add_argument("--out-dir", type=str, default="artifacts/processed")
+    parser.add_argument("--n-prefix", type=int, default=8)
+    parser.add_argument("--max-len", type=int, default=128)
+    parser.add_argument("--val-frac", type=float, default=0.05)
+    parser.add_argument("--test-frac", type=float, default=0.05)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--gate1-n", type=int, default=1000,
+                        help="Sample size for the post-hoc tokenizer round-trip check.")
+    args = parser.parse_args()
+
+    df = pd.read_csv(args.csv)
+    smiles_list = df[args.smiles_col].astype(str).str.strip().tolist()
+    print(f"loaded {len(smiles_list):,} SMILES from {args.csv}")
+
+    tok, encoded, stats = prepare(
+        smiles_list, args.out_dir, n_prefix=args.n_prefix, max_len=args.max_len,
+        val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed)
+
+    with open(os.path.join(args.out_dir, "train_smiles.txt")) as f:
+        train_smiles = f.read().splitlines()
+    gate1_verify(tok, encoded["train"], train_smiles, n=args.gate1_n, seed=args.seed)
+
+
+if __name__ == "__main__":
+    main()

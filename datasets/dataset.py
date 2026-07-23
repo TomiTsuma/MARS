@@ -17,6 +17,8 @@ model is learning nothing. See train/diagnostics.py.
 """
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -76,5 +78,8 @@ def make_loader(ids_array: np.ndarray, pad_id: int, n_struct: int,
     return DataLoader(
         ds, batch_size=batch_size, shuffle=shuffle, drop_last=shuffle,
         num_workers=num_workers, pin_memory=True, generator=g,
-        collate_fn=lambda b: collate(b, pad_id, n_struct),
+        # A lambda closure isn't picklable, which breaks worker startup under
+        # Windows' spawn-based multiprocessing (num_workers > 0). functools.partial
+        # over a module-level function is picklable on every platform.
+        collate_fn=functools.partial(collate, pad_id=pad_id, n_struct=n_struct),
     )

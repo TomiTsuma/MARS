@@ -17,6 +17,11 @@ Every run writes, under `--out-dir`:
     train_log.jsonl     one JSON record per logged/evaluated step
     ckpt_{step}.pt       periodic checkpoints (model, EMA, optimizer, step)
     latest.pt            copy of the most recent checkpoint, for --resume
+
+Every `config.train.gate_every` steps, the EMA weights sample
+`config.train.gate_n_samples` molecules and score them against the Tier 0
+gate (model/metrics.py:tier0_gate). The first time the gate passes, training
+stops early and the checkpoint is saved as `gate_passed.pt`.
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ import os
 import sys
 import time
 from copy import deepcopy
-
+from datetime import datetime
 import numpy as np
 import torch
 
@@ -38,7 +43,9 @@ from datasets.dataset import make_loader
 from datasets.tokenizer import SelfiesTokenizer
 from model.model import MDLM
 from model.objective import training_step
+from model.sampler import sample_to_smiles
 from model.schedule import get_schedule
+import model.metrics as metrics
 
 
 # ------------------------------------------------------------------- EMA
@@ -109,6 +116,15 @@ def load_data(data_cfg, train_cfg, num_workers: int):
     return tok, train_loader, val_loader
 
 
+def load_gate_smiles(processed_dir: str) -> tuple:
+    """Reference sets written by prepare.py, used to score the Tier 0 gate."""
+    with open(os.path.join(processed_dir, "train_smiles.txt")) as f:
+        train_smiles = f.read().splitlines()
+    with open(os.path.join(processed_dir, "test_smiles.txt")) as f:
+        test_smiles = f.read().splitlines()
+    return train_smiles, test_smiles
+
+
 # ------------------------------------------------------------------- eval
 @torch.no_grad()
 def evaluate(model, loader, schedule, mask_id, pad_id, t_eps, low_discrepancy,
@@ -137,6 +153,20 @@ def evaluate_ema(model, ema: EMA, loader, schedule, mask_id, pad_id, t_eps,
                        low_discrepancy, device, max_batches)
     model.load_state_dict(backup)
     return metrics
+
+
+@torch.no_grad()
+def sample_gate_smiles(model, ema: EMA, schedule, tok, n_samples: int, n_steps: int,
+                       mode: str, batch_size: int, device) -> list:
+    """Swap the EMA shadow weights in, sample molecules, swap the live weights
+    back. Mirrors evaluate_ema: the EMA copy is what gets judged, always."""
+    backup = deepcopy(model.state_dict())
+    model.load_state_dict(ema.state_dict())
+    model.eval()
+    generated = sample_to_smiles(model, schedule, tok, n_samples, n_steps=n_steps,
+                                 device=str(device), batch_size=batch_size, mode=mode)
+    model.load_state_dict(backup)
+    return generated
 
 
 # ------------------------------------------------------------------- checkpoints
@@ -184,6 +214,11 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=None)
     parser.add_argument("--eval-every", type=int, default=None)
     parser.add_argument("--ckpt-every", type=int, default=None)
+    parser.add_argument("--gate-every", type=int, default=None,
+                        help="Steps between Tier 0 gate checks (sample + score). "
+                             "Training stops early, saving gate_passed.pt, once it passes.")
+    parser.add_argument("--gate-n-samples", type=int, default=None,
+                        help="Molecules sampled per Tier 0 gate check.")
     parser.add_argument("--precision", type=str, default=None,
                         choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--seed", type=int, default=None)
@@ -234,6 +269,10 @@ def main() -> None:
         config.train.eval_every = args.eval_every
     if args.ckpt_every:
         config.train.ckpt_every = args.ckpt_every
+    if args.gate_every:
+        config.train.gate_every = args.gate_every
+    if args.gate_n_samples:
+        config.train.gate_n_samples = args.gate_n_samples
     if args.precision:
         config.train.precision = args.precision
     if args.seed is not None:
@@ -253,6 +292,7 @@ def main() -> None:
     tok, train_loader, val_loader = load_data(config.data, config.train, args.num_workers)
     print(f"vocab_size={tok.vocab_size}  n_struct={tok.n_struct}  "
          f"train={len(train_loader.dataset):,}  val={len(val_loader.dataset):,}")
+    gate_train_smiles, gate_test_smiles = load_gate_smiles(config.data.processed_dir)
 
     # ---- model
     model = MDLM(vocab_size=tok.vocab_size, cfg=config.model, pad_id=tok.pad_id).to(device)
@@ -269,7 +309,7 @@ def main() -> None:
 
     precision = config.train.precision
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": None}[precision]
-    scaler = torch.cuda.amp.GradScaler(enabled=(precision == "fp16" and device.type == "cuda"))
+    # scaler = torch.amp.GradScaler(device.type, enabled=(precision == "fp16" and device.type == "cuda"))
 
     step = 0
     if args.resume:
@@ -295,23 +335,23 @@ def main() -> None:
             batch = next(data_iter)
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
-        with torch.autocast(device_type=device.type, dtype=amp_dtype,
-                            enabled=amp_dtype is not None):
-            out = training_step(model, batch, schedule, tok.mask_id, tok.pad_id,
-                                config.diffusion.t_eps, config.diffusion.low_discrepancy)
-            loss = out["loss"]
+        # with torch.autocast(device_type=device.type, dtype=amp_dtype,
+        #                     enabled=amp_dtype is not None):
+        out = training_step(model, batch, schedule, tok.mask_id, tok.pad_id,
+                            config.diffusion.t_eps, config.diffusion.low_discrepancy)
+        loss = out["loss"]
 
         optimizer.zero_grad(set_to_none=True)
-        if scaler.is_enabled():
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip)
-            optimizer.step()
+        # if scaler.is_enabled():
+        #     scaler.scale(loss).backward()
+        #     scaler.unscale_(optimizer)
+        #     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip)
+        #     scaler.step(optimizer)
+        #     scaler.update()
+        # else:
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip)
+        optimizer.step()
         scheduler.step()
         ema.update(model)
         step += 1
@@ -353,8 +393,23 @@ def main() -> None:
                             step, model, ema, optimizer, scheduler, config)
             print(f"  saved checkpoint: {ckpt_path}")
 
+        if step % config.train.gate_every == 0:
+            generated = sample_gate_smiles(
+                model, ema, schedule, tok, config.train.gate_n_samples,
+                config.diffusion.n_sampling_steps, config.diffusion.unmasking,
+                min(512, config.train.gate_n_samples), device)
+            gate_report = metrics.evaluate(generated, gate_train_smiles, gate_test_smiles)
+            log_record({"step": step, "split": "gate", **gate_report})
+            gate_passed = metrics.tier0_gate(gate_report)
+            model.train()
+            if gate_passed:
+                gate_path = os.path.join(config.train.out_dir, "gate_passed.pt")
+                save_checkpoint(gate_path, step, model, ema, optimizer, scheduler, config)
+                print(f"  Tier 0 gate PASSED at step {step:,} -> saved {gate_path}, stopping training")
+                break
+
     log_file.close()
-    print(f"done: {config.train.max_steps:,} steps -> {config.train.out_dir}")
+    print(f"done: {step:,} steps -> {config.train.out_dir}")
 
 
 if __name__ == "__main__":

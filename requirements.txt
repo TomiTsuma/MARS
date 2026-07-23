@@ -1,0 +1,6 @@
+torch>=2.1
+numpy>=1.26
+pandas>=2.0
+rdkit>=2023.9
+selfies>=2.1
+fcd-torch>=1.0.7
