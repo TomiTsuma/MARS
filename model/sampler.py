@@ -43,7 +43,9 @@ def sample(model,
            mode: str = "ancestral",
            device: str = "cuda",
            steer: Optional[Callable] = None,
-           cache=None) -> torch.Tensor:
+           cache=None,
+           reveal_noise: Optional[torch.Tensor] = None,
+           logit_fn: Optional[Callable] = None) -> torch.Tensor:
     """Generate `n_samples` sequences. Returns (n_samples, seq_len) int64.
 
     `steer` and `cache` are Phase 2 entry points. They are threaded through
@@ -70,8 +72,21 @@ def sample(model,
 
         if cache is not None:
             cache.set_step(k)
-        logits = model(x, t, steer=steer, cache=cache)
+        # Phase 2: position-aware steering (MaskedOnly / FrozenOnly) needs the
+        # current token ids, which the SteerFn(h, layer, step) signature does
+        # not carry. Handing the context to the steerer here is cheaper than
+        # changing the protocol and keeps SteerFn compatible with Phase 4.
+        if steer is not None and hasattr(steer, "set_context"):
+            steer.set_context(x, k, n_steps)
+        # NOTE: `step=k` must be passed through, or schedule.active(step) in
+        # every WHEN-axis controller receives None and never fires.
+        logits = model(x, t, steer=steer, cache=cache, step=k)
         logits = subs_logits(logits, mask_id) / max(temperature, 1e-6)
+        # Guidance baselines (classifier guidance, D-CFG, D-CBG) act on the
+        # OUTPUT DISTRIBUTION, unlike activation steering which acts upstream on
+        # the residual stream. This hook is where that distinction is realised.
+        if logit_fn is not None:
+            logits = logit_fn(logits, x, k, n_steps)
         probs = logits.softmax(-1)
 
         is_masked = x.eq(mask_id) & body.unsqueeze(0)
@@ -80,7 +95,17 @@ def sample(model,
 
         if mode == "ancestral":
             p_unmask = schedule.posterior_unmask_prob(ts[k], ts[k + 1])
-            reveal = is_masked & (torch.rand_like(x, dtype=torch.float) < p_unmask)
+            # FIXED-UNMASKING CONTROL (E3). Supplying pre-drawn reveal noise makes
+            # the unmasking trajectory identical across steering conditions: the
+            # reveal decision depends only on this noise and p_unmask, never on
+            # which tokens were sampled. Without it, early-step dominance cannot
+            # be separated from the mechanical fact that fewer positions remain
+            # intervenable later in the trajectory.
+            if reveal_noise is not None:
+                r = reveal_noise[k].to(x.device)[:B, :L]
+            else:
+                r = torch.rand_like(x, dtype=torch.float)
+            reveal = is_masked & (r < p_unmask)
         elif mode == "confidence":
             # reveal a fixed budget of the most confident masked positions
             conf = probs.max(-1).values.masked_fill(~is_masked, -1.0)
@@ -120,3 +145,17 @@ def sample_to_smiles(model, schedule, tokenizer, n_samples: int,
         out.extend(tokenizer.decode_smiles(row.tolist()) for row in x.cpu())
         remaining -= b
     return out
+
+
+def build_reveal_noise(n_steps: int, batch: int, seq_len: int, seed: int = 0,
+                       device: str = "cpu") -> torch.Tensor:
+    """Pre-draw the reveal randomness for the fixed-unmasking control (E3).
+
+    Returns (n_steps, batch, seq_len). Because the reveal decision is a pure
+    function of this noise and the schedule's p_unmask, two generations sharing
+    a plan unmask the SAME positions at the SAME steps regardless of which
+    tokens the model samples. That is what isolates the representational
+    question from the mechanical shrinking of the intervenable set.
+    """
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    return torch.rand(n_steps, batch, seq_len, generator=g)

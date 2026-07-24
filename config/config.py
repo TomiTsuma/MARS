@@ -74,8 +74,8 @@ class TrainConfig:
     log_every: int = 100
     eval_every: int = 5_000
     ckpt_every: int = 10_000
-    gate_every: int = 10_000            # steps between Tier 0 gate checks
-    gate_n_samples: int = 1_000         # molecules sampled per gate check
+    gate_every: int = 1000            # steps between Tier 0 gate checks
+    gate_n_samples: int = 20         # molecules sampled per gate check
     precision: str = "bf16"
     out_dir: str = f"runs/phase1/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     seed: int = 0
