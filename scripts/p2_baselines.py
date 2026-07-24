@@ -45,7 +45,7 @@ from datasets.tokenizer import SelfiesTokenizer
 from model.schedule import get_schedule
 from model.sampler import sample_to_smiles
 from model.model import MDLM
-from properties.oracles import compute, EXACT_TARGETS
+from properties.oracles.rdkit_props import compute, EXACT_TARGETS
 from properties.steering import (load_residual_stats, DirectionStore, AdditiveSteer)
 from model.baselines.classifier import train_token_classifier
 from model.baselines.guidance import (ClassifierGuidance, DCBG, DCFG,
