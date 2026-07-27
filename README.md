@@ -1,5 +1,9 @@
 # MARS — Masked Diffusion Language Model for Molecules
 
+
+ARIES can function as an acronym by mapping each letter to core technical components of the method: Attention-based Representation Intervention and Elicitation of Structure for conditional molecule generation.Acronym BreakdownA – Attention-based (referring to the cross-attention or self-attention mechanisms in the diffusion backbone)R – Representation (targeting the latent feature spaces or hidden states)I – Intervention (describing the active steering or modification of those internal vectors)E – Elicitation (drawing out or inducing desired chemical properties)S – Structure (referring to the 3D molecular geometry or graph topology being generated)
+
+
 Unconditional molecule generation with an absorbing-state (masked) discrete
 diffusion language model, trained on ZINC250k in SELFIES representation.
 SELFIES guarantees every decoded sequence is a chemically valid molecule, so
