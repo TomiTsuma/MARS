@@ -1,9 +1,8 @@
 """
 Phase 2, Stage E — the alpha sweep (E2). THE HEADLINE EXPERIMENT.
 
-    python scripts/p2_alpha_sweep.py \
-        --data artifacts/zinc250k --ckpt runs/phase1/ckpt_final.pt \
-        --property logp --alpha -4:4:0.5 --n 10000 --seeds 3
+    python3.11 scripts/p2_alpha_sweep.py  --data artifacts/processed --ckpt runs/phase1-configb/latest.pt  --property logp --n 10000 --seeds 3
+
 
 Produces:
     Figure B1  dose-response with Spearman rho   (Tier 1 criterion: rho > 0.7)
